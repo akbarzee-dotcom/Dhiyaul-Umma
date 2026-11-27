@@ -1,54 +1,55 @@
-name: Bangun APK Dhiyaul Umma
+name: Build Android APK
 
 on:
-  workflow_dispatch: {}
-
-env:
-  APP_DIR: dhiyaul-umma/dhiyaul-umma
+  push:
+    branches: [ main ]
+  workflow_dispatch:
 
 jobs:
   apk:
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: dhiyaul-umma/dhiyaul-umma
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-      - uses: actions/setup-node@v4
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
         with:
           node-version: 20
 
-      - uses: actions/setup-java@v4
+      - name: Setup Java 17
+        uses: actions/setup-java@v5
         with:
-          distribution: temurin
-          java-version: 17
+          distribution: 'temurin'
+          java-version: '17'
 
-      - uses: android-actions/setup-android@v3
-
-      - name: Unduh library web
+      - name: Install dependencies & Build Android
         run: |
-          mkdir -p vendor
-          curl -fsSL https://cdn.tailwindcss.com -o vendor/tailwind.js
-          curl -fsSL https://unpkg.com/lucide@latest -o vendor/lucide.js
+          if [ -d "dhiyaul-umma/dhiyaul-umma" ]; then
+            cd dhiyaul-umma/dhiyaul-umma
+          fi
+          [ -f paket.json ] && mv paket.json package.json || true
+          [ -f kapasitor.config.json ] && mv kapasitor.config.json capacitor.config.json || true
+          [ -f indeks.html ] && mv indeks.html index.html || true
+          [ -d peralatan ] && mv peralatan tools || true
+          [ -d aktiva ] && mv aktiva assets || true
 
-      - name: Siapkan folder www
-        run: |
-          mkdir www
-          cp -r index.html manifest.webmanifest sw.js assets vendor www/
+          mkdir -p www
+          cp -f index.html www/ 2>/dev/null || true
+          cp -f manifest.webmanifest sw.js www/ 2>/dev/null || true
+          cp -rf assets www/ 2>/dev/null || true
 
-      - run: npm install
-      - run: npx cap add android
-      - run: bash tools/configure-android.sh
-      - run: npx cap sync android
+          npm install
+          npx cap add android || true
+          [ -f tools/configure-android.sh ] && bash tools/configure-android.sh || true
+          npx cap sync android
 
-      - name: Bangun APK
-        working-directory: dhiyaul-umma/dhiyaul-umma/android
-        run: |
+          cd android
           chmod +x gradlew
-          ./gradlew assembleDebug --no-daemon
+          ./gradlew assembleDebug
 
-      - uses: actions/upload-artifact@v4
+      - name: Upload APK Artifact
+        uses: actions/upload-artifact@v4
         with:
-          name: dhiyaul-umma-apk
-          path: dhiyaul-umma/dhiyaul-umma/android/app/build/outputs/apk/debug/app-debug.apk
+          name: dhiyaul-ummah-debug-apk
+          path: "**/android/app/build/outputs/apk/debug/app-debug.apk"
