@@ -1,7 +1,0 @@
-{
-  "appId": "id.dhiyaulumma.app",
-  "appName": "Dhiyaul Umma",
-  "webDir": "www",
-  "backgroundColor": "#022C22",
-  "server": { "androidScheme": "https" }
-}
