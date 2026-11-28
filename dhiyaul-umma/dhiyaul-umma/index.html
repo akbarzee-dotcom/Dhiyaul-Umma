@@ -697,6 +697,8 @@
             <input id="ai-url" type="url" placeholder="https://....workers.dev" class="w-full border border-slate-200 rounded-lg px-3 py-2 text-xs">
             <label class="block font-semibold text-slate-600">atau kunci Gemini pribadi (langsung dari HP, hanya untuk Anda sendiri)</label>
             <input id="ai-key" type="password" placeholder="AIza..." class="w-full border border-slate-200 rounded-lg px-3 py-2 text-xs">
+            <label class="block font-semibold text-slate-600">Nama model (opsional, kosongkan bila ragu)</label>
+            <input id="ai-model" type="text" placeholder="gemini-2.5-flash" class="w-full border border-slate-200 rounded-lg px-3 py-2 text-xs">
             <p id="ai-test" class="text-[11px] text-slate-500 break-words"></p>
             <div class="flex justify-end gap-4 pt-1 font-extrabold"><button onclick="aiTest()" class="text-amber-700">Tes koneksi</button><button onclick="aiClearChat()" class="text-slate-500">Hapus percakapan</button><button onclick="aiSaveSettings()" class="text-emeraldClassic">Simpan</button></div>
           </div>
@@ -2138,7 +2140,7 @@ const HC = (() => {
     }
     function aiToggleSettings() {
       const p = document.getElementById('ai-settings'); p.classList.toggle('hidden');
-      document.getElementById('ai-url').value = lsGet('du_ai_url') || ''; document.getElementById('ai-key').value = lsGet('du_ai_key') || '';
+      document.getElementById('ai-url').value = lsGet('du_ai_url') || ''; document.getElementById('ai-key').value = lsGet('du_ai_key') || ''; document.getElementById('ai-model').value = lsGet('du_ai_model') || '';
     }
     function aiSaveSettings(keepOpen) {
       const uEl = document.getElementById('ai-url'), kEl = document.getElementById('ai-key');
@@ -2147,15 +2149,15 @@ const HC = (() => {
       if (!/^https:\/\/[^\s"']+$/.test(u) || /generativelanguage\.googleapis\.com/.test(u)) u = ''; // bukan alamat server perantara
       if (m) kEl.value = m[0];                                   // ambil kunci walau yang tertempel teks curl
       uEl.value = u;
-      lsSet('du_ai_url', u); lsSet('du_ai_key', kEl.value.trim());
+      lsSet('du_ai_url', u); lsSet('du_ai_key', kEl.value.trim()); lsSet('du_ai_model', (document.getElementById('ai-model').value || '').trim().replace(/^models\//, ''));
       if (keepOpen !== true) document.getElementById('ai-settings').classList.add('hidden');
     }
     function aiClearChat() { aiHist = []; lsSet('du_ai_hist', '[]'); aiRender(); }
     function aiAsk(q) { document.getElementById('ai-input').value = q; aiSend(); }
-    async function aiFetch(url, opt) {
-      const ctl = new AbortController(), t = setTimeout(() => ctl.abort(), 40000);
+    async function aiFetch(url, opt, ms) {
+      const ctl = new AbortController(), t = setTimeout(() => ctl.abort(), ms || 40000);
       try { return await fetch(url, Object.assign({ signal: ctl.signal }, opt)); }
-      catch (e) { throw new Error(e.name === 'AbortError' ? 'Waktu habis (40 detik). Periksa sinyal internet.' : 'Tidak bisa terhubung ke internet / server (' + (e.message || e) + ')'); }
+      catch (e) { throw new Error(e.name === 'AbortError' ? 'Waktu habis. Periksa sinyal internet.' : 'Tidak bisa terhubung ke internet / server (' + (e.message || e) + ')'); }
       finally { clearTimeout(t); }
     }
     async function aiCall(msgs) {
@@ -2165,21 +2167,30 @@ const HC = (() => {
         const d = await r.json().catch(() => ({})); if (!r.ok) throw new Error(d.error || ('Server perantara bermasalah (' + r.status + ')')); if (typeof d.text !== 'string') throw new Error('Alamat server perantara salah. Kosongkan kolom itu bila memakai kunci Gemini.'); return d.text;
       }
       if (key) {
+        const custom = (lsGet('du_ai_model') || '').trim(), okm = lsGet('du_ai_model_ok') || '';
+        const chain = [custom, okm, 'gemini-2.5-flash', 'gemini-2.5-flash-lite', 'gemini-flash-latest', 'gemini-flash-lite-latest', 'gemini-2.0-flash'].filter((m, i, a) => m && a.indexOf(m) === i);
         let last = '';
-        for (const model of ['gemini-2.5-flash', 'gemini-flash-latest', 'gemini-2.0-flash']) {
-          const r = await aiFetch('https://generativelanguage.googleapis.com/v1beta/models/' + model + ':generateContent', {
-            method: 'POST', headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key },
-            body: JSON.stringify({ systemInstruction: { parts: [{ text: AI_SYSTEM }] }, contents: msgs.map(m => ({ role: m.role, parts: [{ text: m.text }] })), generationConfig: Object.assign({ temperature: 0.4, maxOutputTokens: 2048 }, model.indexOf('2.5') > -1 ? { thinkingConfig: { thinkingBudget: 0 } } : {}) })
-          });
+        for (const model of chain) {
+          let r;
+          try {
+            r = await aiFetch('https://generativelanguage.googleapis.com/v1beta/models/' + model + ':generateContent', {
+              method: 'POST', headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key },
+              body: JSON.stringify({ systemInstruction: { parts: [{ text: AI_SYSTEM }] }, contents: msgs.map(m => ({ role: m.role, parts: [{ text: m.text }] })), generationConfig: Object.assign({ temperature: 0.4, maxOutputTokens: 2048 }, /2\.5/.test(model) ? { thinkingConfig: { thinkingBudget: 0 } } : {}) })
+            }, 20000);
+          } catch (e) { last = e.message; continue; }              // jaringan/timeout: coba model lain
           const d = await r.json().catch(() => ({}));
-          if (r.ok) { const p = (((d.candidates || [])[0] || {}).content || {}).parts; return (p ? p.map(x => x.text || '').join('') : '').trim() || 'Maaf, jawaban kosong. Coba ubah atau perjelas pertanyaan.'; }
+          if (r.ok) {
+            const p = (((d.candidates || [])[0] || {}).content || {}).parts;
+            const txt = (p ? p.map(x => x.text || '').join('') : '').trim();
+            if (!txt) { last = 'Jawaban kosong dari ' + model; continue; }
+            lsSet('du_ai_model_ok', model); return txt;
+          }
           const msg = (d.error && d.error.message) || '';
-          if (r.status === 429) throw new Error('Kuota gratis habis, coba lagi nanti.');
           if (r.status === 400 || r.status === 401 || r.status === 403) throw new Error('Kunci ditolak (' + r.status + '). ' + msg);
-          last = 'Galat ' + r.status + ': ' + msg;
-          if (r.status !== 404) break;
+          last = (r.status === 429 ? 'Kuota gratis model ' + model + ' habis' : 'Galat ' + r.status + ' pada ' + model) + (msg ? ': ' + msg : '');
+          // 429, 404, 500, 503: lanjut ke model berikutnya
         }
-        throw new Error(last || 'Gagal menghubungi Gemini');
+        throw new Error('Semua model Gemini sedang sibuk atau tidak terjangkau. Terakhir: ' + (last || 'tidak diketahui') + '. Coba lagi sebentar lagi.');
       }
       throw new Error('NOCONF');
     }
