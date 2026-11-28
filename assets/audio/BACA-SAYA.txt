@@ -1,3 +1,0 @@
-Taruh di folder ini:
-  adzan.mp3        -> Adzan 1 (Dzuhur, Ashar, Maghrib, Isya)
-  adzan_subuh.mp3  -> Adzan 2 (khusus Subuh)
