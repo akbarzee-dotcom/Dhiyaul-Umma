@@ -690,14 +690,15 @@
           <h2 class="text-xl font-extrabold mt-0.5">Tanya Ustadz AI</h2></div>
           <button onclick="aiToggleSettings()" class="w-9 h-9 rounded-xl bg-white/15 flex items-center justify-center"><i data-lucide="settings" class="w-5 h-5"></i></button>
         </div>
-        <div class="p-4 space-y-3">
+        <div class="p-4 pb-28 space-y-3">
           <div id="ai-settings" class="hidden bg-white rounded-2xl p-4 border border-emerald-900/10 shadow-sm space-y-2 text-xs">
             <p class="font-extrabold text-emeraldDeep">Pengaturan koneksi</p>
             <label class="block font-semibold text-slate-600">Alamat server perantara (disarankan)</label>
             <input id="ai-url" type="url" placeholder="https://....workers.dev" class="w-full border border-slate-200 rounded-lg px-3 py-2 text-xs">
             <label class="block font-semibold text-slate-600">atau kunci Gemini pribadi (langsung dari HP, hanya untuk Anda sendiri)</label>
             <input id="ai-key" type="password" placeholder="AIza..." class="w-full border border-slate-200 rounded-lg px-3 py-2 text-xs">
-            <div class="flex justify-end gap-4 pt-1 font-extrabold"><button onclick="aiClearChat()" class="text-slate-500">Hapus percakapan</button><button onclick="aiSaveSettings()" class="text-emeraldClassic">Simpan</button></div>
+            <p id="ai-test" class="text-[11px] text-slate-500 break-words"></p>
+            <div class="flex justify-end gap-4 pt-1 font-extrabold"><button onclick="aiTest()" class="text-amber-700">Tes koneksi</button><button onclick="aiClearChat()" class="text-slate-500">Hapus percakapan</button><button onclick="aiSaveSettings()" class="text-emeraldClassic">Simpan</button></div>
           </div>
           <div id="ai-chat" class="space-y-3 min-h-[40vh]"></div>
           <div id="ai-suggest" class="flex flex-wrap gap-2"></div>
@@ -2132,34 +2133,56 @@ const HC = (() => {
       const p = document.getElementById('ai-settings'); p.classList.toggle('hidden');
       document.getElementById('ai-url').value = lsGet('du_ai_url') || ''; document.getElementById('ai-key').value = lsGet('du_ai_key') || '';
     }
-    function aiSaveSettings() {
+    function aiSaveSettings(keepOpen) {
       lsSet('du_ai_url', document.getElementById('ai-url').value.trim()); lsSet('du_ai_key', document.getElementById('ai-key').value.trim());
-      document.getElementById('ai-settings').classList.add('hidden');
+      if (keepOpen !== true) document.getElementById('ai-settings').classList.add('hidden');
     }
     function aiClearChat() { aiHist = []; lsSet('du_ai_hist', '[]'); aiRender(); }
     function aiAsk(q) { document.getElementById('ai-input').value = q; aiSend(); }
+    async function aiFetch(url, opt) {
+      const ctl = new AbortController(), t = setTimeout(() => ctl.abort(), 40000);
+      try { return await fetch(url, Object.assign({ signal: ctl.signal }, opt)); }
+      catch (e) { throw new Error(e.name === 'AbortError' ? 'Waktu habis (40 detik). Periksa sinyal internet.' : 'Tidak bisa terhubung ke internet / server (' + (e.message || e) + ')'); }
+      finally { clearTimeout(t); }
+    }
     async function aiCall(msgs) {
-      const url = AI_ENDPOINT || lsGet('du_ai_url'), key = lsGet('du_ai_key');
+      const url = (AI_ENDPOINT || lsGet('du_ai_url') || '').trim(), key = (lsGet('du_ai_key') || '').replace(/[\s"']/g, '');
       if (url) {
-        const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ messages: msgs }) });
-        const d = await r.json().catch(() => ({})); if (!r.ok) throw new Error(d.error || 'Server perantara bermasalah'); return d.text;
+        const r = await aiFetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ messages: msgs }) });
+        const d = await r.json().catch(() => ({})); if (!r.ok) throw new Error(d.error || ('Server perantara bermasalah (' + r.status + ')')); return d.text;
       }
       if (key) {
-        const r = await fetch('https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent', {
-          method: 'POST', headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key },
-          body: JSON.stringify({ systemInstruction: { parts: [{ text: AI_SYSTEM }] }, contents: msgs.map(m => ({ role: m.role, parts: [{ text: m.text }] })), generationConfig: { temperature: 0.4, maxOutputTokens: 1200 } })
-        });
-        const d = await r.json().catch(() => ({}));
-        if (!r.ok) throw new Error(r.status === 429 ? 'Kuota gratis habis, coba lagi nanti.' : ((d.error && d.error.message) || 'Gagal menghubungi Gemini'));
-        const p = (((d.candidates || [])[0] || {}).content || {}).parts; return p ? p.map(x => x.text || '').join('') : 'Maaf, jawaban tidak tersedia.';
+        let last = '';
+        for (const model of ['gemini-2.5-flash', 'gemini-flash-latest', 'gemini-2.0-flash']) {
+          const r = await aiFetch('https://generativelanguage.googleapis.com/v1beta/models/' + model + ':generateContent', {
+            method: 'POST', headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key },
+            body: JSON.stringify({ systemInstruction: { parts: [{ text: AI_SYSTEM }] }, contents: msgs.map(m => ({ role: m.role, parts: [{ text: m.text }] })), generationConfig: { temperature: 0.4, maxOutputTokens: 1200 } })
+          });
+          const d = await r.json().catch(() => ({}));
+          if (r.ok) { const p = (((d.candidates || [])[0] || {}).content || {}).parts; return p ? p.map(x => x.text || '').join('') : 'Maaf, jawaban tidak tersedia. Coba ubah pertanyaan.'; }
+          const msg = (d.error && d.error.message) || '';
+          if (r.status === 429) throw new Error('Kuota gratis habis, coba lagi nanti.');
+          if (r.status === 400 || r.status === 401 || r.status === 403) throw new Error('Kunci ditolak (' + r.status + '). ' + msg);
+          last = 'Galat ' + r.status + ': ' + msg;
+          if (r.status !== 404) break;
+        }
+        throw new Error(last || 'Gagal menghubungi Gemini');
       }
       throw new Error('NOCONF');
+    }
+    async function aiTest() {
+      const out = document.getElementById('ai-test'); out.textContent = 'Menguji...';
+      aiSaveSettings(true);
+      try { const t = await aiCall([{ role: 'user', text: 'Ucapkan salam singkat dalam satu kalimat.' }]); out.textContent = 'Berhasil: ' + t.slice(0, 120); out.className = 'text-[11px] font-semibold text-emerald-700'; }
+      catch (e) { out.textContent = e.message === 'NOCONF' ? 'Belum ada kunci atau alamat tersimpan.' : 'Gagal: ' + e.message; out.className = 'text-[11px] font-semibold text-red-600'; }
     }
     async function aiSend() {
       if (aiBusy) return;
       const inp = document.getElementById('ai-input'), q = inp.value.trim(); if (!q) return;
-      if (!navigator.onLine) { aiHist.push({ role: 'user', text: q }, { role: 'model', text: 'Fitur ini butuh koneksi internet.' }); inp.value = ''; aiRender(); return; }
-      aiBusy = true; inp.value = ''; aiHist.push({ role: 'user', text: q }); aiRender();
+      if (false) { aiHist.push({ role: 'user', text: q }, { role: 'model', text: 'Fitur ini butuh koneksi internet.' }); inp.value = ''; aiRender(); return; }
+      aiBusy = true;
+      try {
+      inp.value = ''; aiHist.push({ role: 'user', text: q }); aiRender();
       const box = document.getElementById('ai-chat'); box.insertAdjacentHTML('beforeend', '<div id="ai-typing" class="text-xs text-slate-500 px-2">Ustadz AI sedang menulis...</div>');
       try {
         aiHist.push({ role: 'model', text: await aiCall(aiHist.slice(-10).map(m => ({ role: m.role, text: m.text }))) });
@@ -2168,7 +2191,9 @@ const HC = (() => {
         if (e.message === 'NOCONF') { document.getElementById('ai-settings').classList.remove('hidden'); aiHist.push({ role: 'user', text: q }, { role: 'model', text: 'Fitur AI belum disambungkan. Isi alamat server perantara atau kunci Gemini pada pengaturan di atas, lalu kirim ulang pertanyaan.' }); aiHist.splice(-2, 2); inp.value = q; }
         else { aiHist.push({ role: 'user', text: q }, { role: 'model', text: 'Maaf: ' + e.message }); }
       }
-      lsSet('du_ai_hist', JSON.stringify(aiHist.slice(-20))); aiBusy = false; aiRender();
+      lsSet('du_ai_hist', JSON.stringify(aiHist.slice(-20)));
+      } catch (err) { aiHist.push({ role: 'model', text: 'Maaf, terjadi galat: ' + (err && err.message || err) }); }
+      finally { aiBusy = false; aiRender(); }
     }
     document.getElementById('ai-input').addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); aiSend(); } });
 
